@@ -21,22 +21,79 @@ client = OpenAI(api_key=api_key)
 # ------------------------------------------------------------------------------
 
 def get_model_context(model):
-    """Refreshes and returns the model context string."""
+    """Refreshes and returns the model context string, including detailed physics/material settings."""
     context = []
     context.append("=== Model Overview ===")
     context.append(f"Modules: {model.modules()}")
     context.append(f"Components: {model.components()}")
     context.append(f"Geometries: {model.geometries()}")
-    context.append(f"Physics: {model.physics()}")
     context.append(f"Studies: {model.studies()}")
     
-    context.append("\n=== Parameters (User Defined) ===")
+    context.append("\n=== Parameters (Global) ===")
     try:
         params = model.parameters()
         for k, v in params.items():
             context.append(f"{k} = {v}")
     except Exception as e:
         context.append(f"Could not load parameters: {e}")
+
+    # --- Physics Inspection ---
+    context.append("\n=== Physics & Materials Details ===")
+    try:
+        physics_names = model.physics()
+        for ph_name in physics_names:
+            context.append(f"\n[Physics Interface: {ph_name}]")
+            node = model / "physics" / ph_name
+            if not node.exists():
+                continue
+            
+            # recursive function to list properties
+            def list_node_properties(n, indent=2):
+                prefix = " " * indent
+                try:
+                    # Some nodes have 'properties()' which dict-like settings
+                    props = n.properties()
+                    if props:
+                        for pk, pv in props.items():
+                            context.append(f"{prefix}{pk}: {pv}")
+                except:
+                    pass
+                
+                # Check children (features)
+                try:
+                    for child in n.children():
+                        context.append(f"{prefix}- Feature: {child.name()} ({child.type()})")
+                        list_node_properties(child, indent + 4)
+                except:
+                    pass
+
+            list_node_properties(node)
+            
+    except Exception as e:
+        context.append(f"Error inspecting physics: {e}")
+
+    # --- Materials Inspection ---
+    try:
+        context.append("\n[Materials]")
+        # Mph doesn't have a direct 'materials()' list sometimes, distinct from access
+        # Usually found under 'components' -> 'component 1' -> 'materials'
+        # We'll try to scan the model tree briefly for materials
+        for comp in model.components():
+            mat_node_path = model / "components" / comp / "materials"
+            if mat_node_path.exists():
+                for mat in mat_node_path.children():
+                    context.append(f"  - {mat.name()} ({mat.type()})")
+                    # Try to see properties like 'rho', 'mu'
+                    try:
+                        # Materials often have 'property group' -> 'def' -> variables
+                        # This is deep, but let's try shallow property listing
+                        props = mat.properties()
+                        if props:
+                            context.append(f"    Properties: {props}")
+                    except:
+                        pass
+    except Exception as e:
+        context.append(f"Error inspecting materials: {e}")
 
     context.append("\n=== Dependent Variables (Solutions) ===")
     try:
