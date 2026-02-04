@@ -1,0 +1,13 @@
+# Secrets / env
+env.local
+.env
+.env.local
+
+# COMSOL lock file
+*.mph.lock
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
