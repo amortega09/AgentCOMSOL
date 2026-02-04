@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentCOMSOL</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      font-family: "Orbitron", "Segoe UI", sans-serif;
+      background: #030712;
+      color: #e4e4e4;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        linear-gradient(180deg, rgba(6, 182, 212, 0.03) 0%, transparent 40%),
+        linear-gradient(90deg, transparent 0%, rgba(34, 211, 238, 0.02) 50%, transparent 100%),
+        repeating-linear-gradient(0deg, transparent, transparent 40px, rgba(34, 211, 238, 0.03) 40px, rgba(34, 211, 238, 0.03) 41px),
+        repeating-linear-gradient(90deg, transparent, transparent 40px, rgba(34, 211, 238, 0.03) 40px, rgba(34, 211, 238, 0.03) 41px);
+      pointer-events: none;
+      z-index: 0;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(ellipse 80% 50% at 50% 20%, rgba(6, 182, 212, 0.08) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .hero {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      z-index: 1;
+    }
+    .hero span {
+      font-size: clamp(4rem, 12vw, 7rem);
+      font-weight: 900;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, #22d3ee 0%, #06b6d4 30%, #0891b2 60%, #0e7490 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-shadow: none;
+      filter: drop-shadow(0 0 40px rgba(6, 182, 212, 0.4)) drop-shadow(0 0 80px rgba(34, 211, 238, 0.2));
+      animation: pulse 4s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.92; }
+    }
+    .hero.hidden {
+      display: none;
+    }
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.5rem;
+      max-width: 48rem;
+      margin: 0 auto;
+      width: 100%;
+      position: relative;
+      z-index: 1;
+    }
+    .message {
+      margin-bottom: 1.5rem;
+      display: flex;
+      gap: 0.75rem;
+    }
+    .message.user {
+      flex-direction: row-reverse;
+    }
+    .message .avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.65rem;
+      font-weight: 700;
+    }
+    .message.user .avatar {
+      background: linear-gradient(135deg, #06b6d4, #0891b2);
+      color: #fff;
+      box-shadow: 0 0 12px rgba(6, 182, 212, 0.4);
+    }
+    .message.assistant .avatar {
+      background: rgba(34, 211, 238, 0.15);
+      border: 1px solid rgba(34, 211, 238, 0.3);
+      color: #22d3ee;
+    }
+    .message .bubble {
+      max-width: 85%;
+      padding: 0.75rem 1rem;
+      border-radius: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-weight: 400;
+    }
+    .message.user .bubble {
+      background: linear-gradient(135deg, rgba(6, 182, 212, 0.3), rgba(8, 145, 178, 0.3));
+      border: 1px solid rgba(34, 211, 238, 0.4);
+      color: #fff;
+      box-shadow: 0 0 20px rgba(6, 182, 212, 0.15);
+    }
+    .message.assistant .bubble {
+      background: rgba(6, 30, 40, 0.6);
+      border: 1px solid rgba(34, 211, 238, 0.2);
+      backdrop-filter: blur(8px);
+    }
+    .input-area {
+      padding: 1rem 1.5rem 1.5rem;
+      position: relative;
+      z-index: 1;
+      max-width: 48rem;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .input-wrap {
+      display: flex;
+      gap: 0.5rem;
+      background: rgba(6, 30, 40, 0.7);
+      border: 1px solid rgba(34, 211, 238, 0.25);
+      border-radius: 12px;
+      padding: 0.5rem;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 0 30px rgba(6, 182, 212, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+    .input-wrap:focus-within {
+      border-color: rgba(34, 211, 238, 0.5);
+      box-shadow: 0 0 40px rgba(6, 182, 212, 0.15);
+    }
+    #input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: #e4e4e4;
+      font-size: 1rem;
+      padding: 0.5rem 0.75rem;
+      outline: none;
+    }
+    #input::placeholder {
+      color: #5b8a8f;
+    }
+    #send {
+      background: linear-gradient(135deg, #06b6d4, #0891b2);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.5rem 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-family: "Orbitron", sans-serif;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      box-shadow: 0 0 20px rgba(6, 182, 212, 0.3);
+    }
+    #send:hover {
+      background: linear-gradient(135deg, #22d3ee, #06b6d4);
+      box-shadow: 0 0 30px rgba(6, 182, 212, 0.5);
+    }
+    #send:disabled {
+      background: rgba(34, 211, 238, 0.2);
+      cursor: not-allowed;
+      color: #5b8a8f;
+      box-shadow: none;
+    }
+    .typing {
+      opacity: 0.7;
+    }
+    .error {
+      color: #f87171;
+      padding: 0.5rem 0;
+      font-size: 0.9rem;
+      text-shadow: 0 0 10px rgba(248, 113, 113, 0.3);
+    }
+  </style>
+</head>
+<body>
+  <div id="hero" class="hero"><span>AgentCOMSOL</span></div>
+  <div id="chat"></div>
+  <div class="input-area">
+    <div class="input-wrap">
+      <input id="input" type="text" placeholder="Ask about your COMSOL model..." autocomplete="off">
+      <button id="send">Send</button>
+    </div>
+    <div id="error" class="error" style="display: none;"></div>
+  </div>
+
+  <script>
+    const chat = document.getElementById('chat');
+    const hero = document.getElementById('hero');
+    const input = document.getElementById('input');
+    const sendBtn = document.getElementById('send');
+    const errorEl = document.getElementById('error');
+
+    function addMessage(role, content, isTyping = false) {
+      const div = document.createElement('div');
+      div.className = `message ${role} ${isTyping ? 'typing' : ''}`;
+      const avatar = role === 'user' ? 'You' : 'AC';
+      div.innerHTML = `
+        <span class="avatar">${avatar}</span>
+        <div class="bubble">${escapeHtml(content) || '&nbsp;'}</div>
+      `;
+      hero.classList.add('hidden');
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML.replace(/\n/g, '<br>');
+    }
+
+    function showError(msg) {
+      errorEl.textContent = msg;
+      errorEl.style.display = 'block';
+    }
+
+    function clearError() {
+      errorEl.textContent = '';
+      errorEl.style.display = 'none';
+    }
+
+    async function send() {
+      const text = input.value.trim();
+      if (!text) return;
+
+      input.value = '';
+      sendBtn.disabled = true;
+      clearError();
+
+      addMessage('user', text);
+      const typingEl = addMessage('assistant', 'Thinking...', true);
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.error || `Request failed: ${res.status}`);
+        }
+
+        typingEl.remove();
+        addMessage('assistant', data.content || '(No response)');
+      } catch (e) {
+        typingEl.remove();
+        showError(e.message);
+        addMessage('assistant', 'Sorry, an error occurred.', false);
+      } finally {
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    });
+  </script>
+</body>
+</html>

@@ -252,11 +252,78 @@ tools = [
     }
 ]
 
+def _message_to_dict(msg):
+    """Convert OpenAI Message object to dict for API round-trip."""
+    d = {"role": msg.role, "content": msg.content or ""}
+    if hasattr(msg, "tool_calls") and msg.tool_calls:
+        d["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+            }
+            for tc in msg.tool_calls
+        ]
+    return d
+
+
+def process_user_message(model, messages, user_content, system_prompt_template):
+    """
+    Process one user message through the agent (including any tool calls) and return the final response.
+    Mutates messages in place.
+    """
+    messages.append({"role": "user", "content": user_content})
+
+    while True:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+        )
+
+        msg = response.choices[0].message
+        messages.append(_message_to_dict(msg))
+
+        if msg.tool_calls:
+            for tool_call in msg.tool_calls:
+                func_name = tool_call.function.name
+                args = json.loads(tool_call.function.arguments)
+
+                tool_output = "Unknown tool"
+
+                if func_name == "set_parameter":
+                    tool_output = set_parameter(model, **args)
+                elif func_name == "build_geometry":
+                    tool_output = build_geometry(model)
+                elif func_name == "build_mesh":
+                    tool_output = build_mesh(model)
+                elif func_name == "solve_study":
+                    tool_output = solve_study(model, **args)
+                elif func_name == "evaluate_expression":
+                    tool_output = evaluate_expression(model, **args)
+                elif func_name == "save_model":
+                    tool_output = save_model(model, **args)
+                elif func_name == "refresh_context":
+                    new_context = get_model_context(model)
+                    messages[0]["content"] = system_prompt_template.format(context=new_context)
+                    tool_output = "Model context refreshed in system prompt."
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": str(tool_output),
+                })
+            continue
+        else:
+            return msg.content or ""
+
+
 def chat_loop(model):
     print("Extracting model context...")
     model_context = get_model_context(model)
     print("Context loaded.")
-    
+
     system_prompt_template = (
         "You are an expert COMSOL Multiphysics assistant. "
         "You have control over the model via tools. "
@@ -269,66 +336,16 @@ def chat_loop(model):
     ]
 
     print("\n--- COMSOL Active Agent Started (Type 'quit' to exit) ---\n")
-    
+
     while True:
         try:
             user_input = input("You: ")
-            if user_input.lower() in ['quit', 'exit']:
+            if user_input.lower() in ["quit", "exit"]:
                 break
-            
-            messages.append({"role": "user", "content": user_input})
-            
-            # Request Loop (Handle potential tool calls)
-            while True:
-                response = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto"
-                )
-                
-                msg = response.choices[0].message
-                messages.append(msg)
-                
-                if msg.tool_calls:
-                    # Execute tools
-                    for tool_call in msg.tool_calls:
-                        func_name = tool_call.function.name
-                        args = json.loads(tool_call.function.arguments)
-                        
-                        tool_output = "Unknown tool"
-                        
-                        if func_name == "set_parameter":
-                            tool_output = set_parameter(model, **args)
-                        elif func_name == "build_geometry":
-                            tool_output = build_geometry(model)
-                        elif func_name == "build_mesh":
-                            tool_output = build_mesh(model)
-                        elif func_name == "solve_study":
-                            tool_output = solve_study(model, **args)
-                        elif func_name == "evaluate_expression":
-                            tool_output = evaluate_expression(model, **args)
-                        elif func_name == "save_model":
-                            tool_output = save_model(model, **args)
-                        elif func_name == "refresh_context":
-                            # Special case: update the system prompt with new context
-                            new_context = get_model_context(model)
-                            # Update the system prompt (index 0)
-                            messages[0]["content"] = system_prompt_template.format(context=new_context)
-                            tool_output = "Model context refreshed in system prompt."
-                        
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": str(tool_output)
-                        })
-                    # Loop back to OpenAI with tool outputs
-                    continue
-                else:
-                    # No more tools, just text response
-                    print(f"\nAI: {msg.content}\n")
-                    break
-            
+
+            reply = process_user_message(model, messages, user_input, system_prompt_template)
+            print(f"\nAI: {reply}\n")
+
         except KeyboardInterrupt:
             break
         except Exception as e:
