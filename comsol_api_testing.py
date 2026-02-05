@@ -5,7 +5,7 @@ import pprint  # For nicer printing of dicts/lists
 client = mph.start(cores=1)  # or mph.start() for default
 
 # Load your model (make sure the file exists in current dir or provide full path)
-model = client.load('Test.1.mph')
+model = client.load('Demo_file.mph')
 
 # --- Model inspection ---
 print("=== Parameters (expressions) ===")

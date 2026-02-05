@@ -356,7 +356,7 @@ def main():
     # Use cores=1 to be lightweight
     mph_client = mph.start(cores=1)
     
-    model_path = 'Test.1.mph'
+    model_path = 'Demo_file.mph'
     if not os.path.exists(model_path):
         print(f"Error: Model file '{model_path}' not found.")
         return

@@ -31,9 +31,9 @@ def init_model():
     model_path = os.environ.get("COMSOL_MODEL", "Demo_file.mph")
     if not os.path.exists(model_path):
         # Fallback for original agent's default
-        model_path = "Test.1.mph" if os.path.exists("Test.1.mph") else "Demo_file.mph"
+        model_path = "Demo_file.mph"
     if not os.path.exists(model_path):
-        raise FileNotFoundError(f"No .mph file found. Tried: Demo_file.mph, Test.1.mph")
+        raise FileNotFoundError(f"No .mph file found. Expected: Demo_file.mph")
 
     print("Starting COMSOL client...")
     mph_client = mph.start(cores=1)
