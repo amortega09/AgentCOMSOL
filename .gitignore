@@ -3,7 +3,8 @@ env.local
 .env
 .env.local
 
-# COMSOL lock file
+# COMSOL
+Demo_file.mph
 *.mph.lock
 
 # Python

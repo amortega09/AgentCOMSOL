@@ -18,38 +18,40 @@ from comsol_agent import (
 
 app = Flask(__name__)
 
-# Global model and conversation state (single-user dev tool)
+# Global state
 model = None
+mph_client = None
 messages = []
 system_prompt_template = None
 
 
 def init_model():
     """Load COMSOL model at startup."""
-    global model, messages, system_prompt_template
-
-    model_path = os.environ.get("COMSOL_MODEL", "Demo_file.mph")
-    if not os.path.exists(model_path):
-        # Fallback for original agent's default
-        model_path = "Demo_file.mph"
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"No .mph file found. Expected: Demo_file.mph")
+    global model, mph_client, messages, system_prompt_template
 
     print("Starting COMSOL client...")
     mph_client = mph.start(cores=1)
-    print(f"Loading model: {model_path}...")
-    model = mph_client.load(model_path)
-    print("Model loaded.")
 
-    model_context = get_model_context(model)
+    model_path = os.environ.get("COMSOL_MODEL", "Demo_file.mph")
+    if os.path.exists(model_path):
+        print(f"Loading model: {model_path}...")
+        model = mph_client.load(model_path)
+        print("Model loaded.")
+        context = get_model_context(model)
+    else:
+        print("No default model found. Starting empty.")
+        model = None
+        context = "No model loaded. Ask to create one."
+
     system_prompt_template = (
         "You are an expert COMSOL Multiphysics assistant. "
         "You have control over the model via tools. "
+        "You can create new models, add components, geometry, and physics. "
         "When asked to change parameters, always offer to build geometry/mesh and solve/save as well.\n\n"
         "Current Model Context:\n{context}"
     )
     messages.clear()
-    messages.append({"role": "system", "content": system_prompt_template.format(context=model_context)})
+    messages.append({"role": "system", "content": system_prompt_template.format(context=context)})
 
 
 @app.route("/")
@@ -59,8 +61,10 @@ def index():
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    if model is None:
-        return jsonify({"error": "Model not loaded"}), 500
+    global model 
+    
+    if mph_client is None:
+         return jsonify({"error": "COMSOL Client not started"}), 500
 
     data = request.get_json()
     if not data or "message" not in data:
@@ -71,7 +75,13 @@ def chat():
         return jsonify({"content": ""})
 
     try:
-        reply = process_user_message(model, messages, user_content, system_prompt_template)
+        # process_user_message now returns (reply, updated_model)
+        reply, updated_model = process_user_message(mph_client, model, messages, user_content, system_prompt_template)
+        
+        # Update global model reference if it changed (e.g. new model created)
+        if updated_model is not model:
+            model = updated_model
+            
         return jsonify({"content": reply})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
