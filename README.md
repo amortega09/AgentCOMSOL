@@ -4,7 +4,7 @@ Chat with an AI assistant that controls your COMSOL model. Change parameters, bu
 
 **Setup**
 
-- Put your OpenAI API key in `env.local` as `OPENAI_API_KEY`
+- Put an API key in an env.local file
 - Add a `.mph` file (e.g. `Demo_file.mph`) in the project folder
 - `pip install -r requirements.txt`
 
