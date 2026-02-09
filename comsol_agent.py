@@ -252,8 +252,6 @@ def add_physics(model, component, interface, tag=None):
     except Exception as e:
         return f"Error adding physics: {e}"
 
-    except Exception as e:
-        return f"Error adding physics: {e}"
 
 def add_physics_feature(model, component, physics, name, type, dimension=None):
     """Adds a feature to a physics interface."""
@@ -294,8 +292,6 @@ def add_physics_feature(model, component, physics, name, type, dimension=None):
     except Exception as e:
         return f"Error adding physics feature: {e}"
 
-    except Exception as e:
-        return f"Error adding physics feature: {e}"
 
 def set_physics_selection(model, component, physics, feature, selection):
     """Sets the geometric selection for a physics feature."""
@@ -683,7 +679,7 @@ def process_user_message(mph_client, model, messages, user_content, system_promp
         while True:
             # API call (using global OpenAI client)
             response = client.chat.completions.create(
-                model="gpt-5",
+                model="gpt-5.2",
                 messages=messages,
                 tools=tools,
                 tool_choice="auto"
