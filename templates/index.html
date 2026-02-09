@@ -316,9 +316,19 @@
     }
 
     function escapeHtml(text) {
+      // First, escape HTML to prevent XSS
       const div = document.createElement('div');
       div.textContent = text;
-      return div.innerHTML.replace(/\n/g, '<br>');
+      let safeText = div.innerHTML;
+
+      // Convert newlines to <br>
+      safeText = safeText.replace(/\n/g, '<br>');
+
+      // Convert Markdown images ![alt](src) to <img src="src" alt="alt">
+      // regex: !\[(.*?)\]\((.*?)\)
+      safeText = safeText.replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1" style="max-width: 100%; border-radius: 8px; margin-top: 0.5rem;">');
+
+      return safeText;
     }
 
     function showError(msg) {

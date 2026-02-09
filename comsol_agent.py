@@ -383,6 +383,135 @@ def add_geometry_feature(model, geometry, type, name=None, properties=None):
     except Exception as e:
         return f"Error adding geometry feature: {e}"
 
+def create_geometry_boolean(model, geometry, type, name, input_objects):
+    """Creates a boolean geometry operation (Union, Difference, Intersection)."""
+    print(f"[Tool] Creating geometry boolean '{type}' ({name}) in '{geometry}' with inputs {input_objects}...")
+    try:
+         # Find geometry
+        found_geom_java = None
+        for c_tag in model.java.component().tags():
+             c_java = model.java.component(c_tag)
+             if geometry in c_java.geom().tags():
+                 found_geom_java = c_java.geom(geometry)
+                 break
+        
+        if not found_geom_java:
+            return f"Error: Geometry '{geometry}' not found."
+
+        if name in [str(t) for t in found_geom_java.feature().tags()]:
+            return f"Error: Feature '{name}' already exists."
+
+        # Create boolean feature
+        # type should be "Uni", "Dif", "Int" (COMSOL tags usually) or "Union", "Difference", "Intersection" -> Map them
+        type_map = {
+            "Union": "Uni", "union": "Uni",
+            "Difference": "Dif", "difference": "Dif",
+            "Intersection": "Int", "intersection": "Int"
+        }
+        comsol_type = type_map.get(type, type) # Fallback to passed type if not in map
+        
+        feat = found_geom_java.create(name, comsol_type)
+        
+        # Set input objects
+        # input_objects should be a list of feature names
+        if isinstance(input_objects, list):
+             feat.selection("input").set(input_objects)
+        elif isinstance(input_objects, str):
+             # Try split
+             feat.selection("input").set(input_objects.split())
+             
+        found_geom_java.run(name)
+        return f"Created boolean operation '{name}' ({comsol_type}) on inputs {input_objects}."
+    except Exception as e:
+        return f"Error creating geometry boolean: {e}"
+
+def add_material(model, component, name, material_type="Common", library_path=None):
+    """Adds a material to the component."""
+    print(f"[Tool] Adding material '{name}' to '{component}' (Source: {library_path})...")
+    try:
+        comp_java = model.java.component(component)
+        if not comp_java:
+            return f"Error: Component '{component}' not found."
+            
+        # If library_path is provided, try to load. 
+        # Note: 'Common' is the standard type for blank materials.
+        # Loading from library usually involves 'Link' or mimicking the file structure.
+        # But 'create(name, "Common", filename)' is supported in some APIs.
+        # Let's try basic creation first.
+        
+        if name in [str(t) for t in comp_java.material().tags()]:
+             return f"Error: Material '{name}' already exists."
+
+        if library_path:
+             # Try to create from file
+             try:
+                 mat = comp_java.material().create(name, material_type, library_path)
+                 return f"Created material '{name}' from '{library_path}'."
+             except Exception as lib_e:
+                 return f"Error loading material from library: {lib_e}. Suggestion: Create empty material and set properties."
+        
+        # Create empty/common material
+        comp_java.material().create(name, material_type)
+        return f"Created empty material '{name}'. Please set properties."
+    except Exception as e:
+        return f"Error adding material: {e}"
+
+def add_multiphysics(model, component, type, tag=None):
+    """Adds a multiphysics coupling."""
+    print(f"[Tool] Adding multiphysics '{type}' to '{component}'...")
+    try:
+        comp_java = model.java.component(component)
+        if not comp_java:
+            return f"Error: Component '{component}' not found."
+            
+        if not tag:
+             tag = f"mp{len(comp_java.multiphysics().tags()) + 1}"
+             
+        comp_java.multiphysics().create(tag, type)
+        return f"Created multiphysics coupling '{tag}' of type '{type}'."
+    except Exception as e:
+        return f"Error adding multiphysics: {e}"
+
+def export_plot(model, plot_group, filename):
+    """Exports a plot group to an image file."""
+    print(f"[Tool] Exporting plot group '{plot_group}' to '{filename}'...")
+    try:
+        # Check if plot group exists
+        pg_tags = [str(t) for t in model.java.result().tags()]
+        if plot_group not in pg_tags:
+             return f"Error: Plot group '{plot_group}' not found. Available: {pg_tags}"
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        
+        # Check if an export feature for this file exists, or create a temporary one
+        # To avoid clutter, we can create a temporary export tag
+        export_tag = "img_export_temp"
+        
+        # Remove if exists (to reset settings)
+        if export_tag in [str(t) for t in model.java.export().tags()]:
+             model.java.export().remove(export_tag)
+             
+        # Create Image export
+        exp = model.java.export().create(export_tag, "Image")
+        exp.set("sourceobject", plot_group)
+        exp.set("filename", os.path.abspath(filename))
+        
+        # Adjust settings for web view (optional)
+        # exp.set("size", "manual")
+        # exp.set("unit", "px")
+        # exp.set("width", "800")
+        
+        # Run export
+        model.java.export(export_tag).run()
+        
+        # Cleanup
+        model.java.export().remove(export_tag)
+        
+        return f"Successfully exported '{plot_group}' to '{filename}'. URL: /static/plots/{os.path.basename(filename)}"
+    except Exception as e:
+        return f"Error exporting plot: {e}"
+
 # ------------------------------------------------------------------------------
 # Tool Schema for OpenAI
 # ------------------------------------------------------------------------------
@@ -620,6 +749,75 @@ tools = [
             }
         }
     },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "create_geometry_boolean",
+            "description": "Creates a boolean operation (Union, Difference, Intersection).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                     "geometry": {"type": "string", "description": "Geometry tag (e.g. 'geom1')."},
+                     "type": {"type": "string", "description": "Type: 'Union', 'Difference', or 'Intersection'."},
+                     "name": {"type": "string", "description": "Tag name (e.g. 'uni1')."},
+                     "input_objects": {
+                         "type": "array", 
+                         "items": {"type": "string"},
+                         "description": "List of feature names to convert (e.g. ['blk1', 'yl1'])."
+                     }
+                },
+                "required": ["geometry", "type", "name", "input_objects"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_material",
+            "description": "Adds a material to the model.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                     "component": {"type": "string", "description": "Component tag (e.g. 'comp1')."},
+                     "name": {"type": "string", "description": "Material tag (e.g. 'mat1')."},
+                     "library_path": {"type": "string", "description": "Optional path to material library file. Omit for empty material."}
+                },
+                "required": ["component", "name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_multiphysics",
+            "description": "Adds a multiphysics coupling.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                     "component": {"type": "string", "description": "Component tag (e.g. 'comp1')."},
+                     "type": {"type": "string", "description": "Coupling type (e.g. 'NonIsothermalFlow')."},
+                     "tag": {"type": "string", "description": "Optional tag."}
+                },
+                "required": ["component", "type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_plot",
+            "description": "Exports a plot group to an image file. Returns the image path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                     "plot_group": {"type": "string", "description": "Plot group tag to export (e.g. 'pg1')."},
+                     "filename": {"type": "string", "description": "Output filename (e.g. 'static/plots/velocity.png'). Use 'static/plots/' directory."}
+                },
+                "required": ["plot_group", "filename"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
@@ -749,6 +947,14 @@ def process_user_message(mph_client, model, messages, user_content, system_promp
                         result = set_physics_property(model, args["component"], args["physics"], args["feature"], args["property"], args["value"])
                     elif name == "add_geometry_feature":
                         result = add_geometry_feature(model, args["geometry"], args["type"], args.get("name"), args.get("properties"))
+                    elif name == "create_geometry_boolean":
+                         result = create_geometry_boolean(model, args["geometry"], args["type"], args["name"], args["input_objects"])
+                    elif name == "add_material":
+                         result = add_material(model, args["component"], args["name"], library_path=args.get("library_path"))
+                    elif name == "add_multiphysics":
+                         result = add_multiphysics(model, args["component"], args["type"], args.get("tag"))
+                    elif name == "export_plot":
+                         result = export_plot(model, args["plot_group"], args["filename"])
                         
                 except Exception as e:
                     result = f"Tool Execution Error: {e}"
