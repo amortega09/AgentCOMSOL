@@ -183,6 +183,85 @@ def evaluate_expression(model, expression, unit, dataset=None, inner=None, outer
     except Exception as e:
         return f"Error evaluating expression: {e}"
 
+def get_solution_info(model, dataset):
+    """Returns available time steps (inner) and parameters (outer) for a dataset."""
+    print(f"[Tool] Getting solution info for dataset '{dataset}'...")
+    try:
+        # Resolve dataset node
+        if dataset not in model.datasets():
+             return f"Error: Dataset '{dataset}' not found. Available: {model.datasets()}"
+        
+        ds_node = model/'datasets'/dataset
+        if not ds_node.exists():
+             return f"Error: Dataset node '{dataset}' does not exist."
+
+        info = []
+        
+        # Try getting inner (usually time steps)
+        try:
+            inner_vals = model.inner(dataset)
+            info.append(f"Inner Solutions (e.g., Time): {inner_vals[0] if isinstance(inner_vals, tuple) else inner_vals}") 
+        except Exception as e:
+            info.append(f"Inner Solutions: Not available or error ({e})")
+
+        # Try getting outer (parametric sweeps)
+        try:
+            outer_vals = model.outer(dataset)
+            info.append(f"Outer Solutions (Parameters): {outer_vals[0] if isinstance(outer_vals, tuple) else outer_vals}")
+        except Exception as e:
+            info.append(f"Outer Solutions: Not available or error ({e})")
+            
+        return "\n".join(info)
+    except Exception as e:
+        return f"Error getting solution info: {e}"
+
+def export_data(model, dataset, filename):
+    """Exports numerical data from a dataset to a text/csv file."""
+    print(f"[Tool] Exporting data from '{dataset}' to '{filename}'...")
+    try:
+        if dataset not in model.datasets():
+             return f"Error: Dataset '{dataset}' not found."
+             
+        # Create Data export
+        exports = model/'exports'
+        name = "data_export_temp"
+        if (exports/name).exists():
+            (exports/name).remove()
+            
+        exp = exports.create("Data", name=name)
+        exp.property("data", dataset)
+        exp.property("filename", os.path.abspath(filename))
+        
+        # Run export
+        exp.run()
+        exp.remove()
+        
+        return f"Successfully exported data to '{filename}'."
+    except Exception as e:
+        return f"Error exporting data: {e}"
+
+def manage_session(mph_client, model, action, target=None):
+    """Manages the COMSOL session (clear, remove model)."""
+    print(f"[Tool] Session management: {action} (Target: {target})...")
+    try:
+        if action == "clear":
+            mph_client.clear()
+            return "Session cleared. All models removed from memory."
+        elif action == "remove":
+            if not target:
+                 # Default to current model if name matches
+                 if model:
+                     target = model.name()
+                 else:
+                     return "Error: No target model specified to remove."
+            
+            mph_client.remove(target)
+            return f"Model '{target}' removed from memory."
+        else:
+            return f"Error: Unknown action '{action}'."
+    except Exception as e:
+        return f"Error managing session: {e}"
+
 def save_model(model, filename):
     """Saves the model to a file."""
     print(f"[Tool] Saving model to '{filename}'...")
@@ -620,6 +699,50 @@ tools = [
     {
         "type": "function",
         "function": {
+            "name": "get_solution_info",
+            "description": "Returns available time steps (inner) and parameter values (outer) for a dataset.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset": {"type": "string", "description": "The dataset to inspect (e.g., 'dset1')."}
+                },
+                "required": ["dataset"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_data",
+            "description": "Exports numerical data from a dataset to a text file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dataset": {"type": "string", "description": "The dataset to export from (e.g., 'dset1')."},
+                    "filename": {"type": "string", "description": "Output filename (e.g., 'data.txt')."}
+                },
+                "required": ["dataset", "filename"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_session",
+            "description": "Manages the COMSOL session (clear memory, remove attributes).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "Action to perform: 'clear' (remove all models) or 'remove' (remove specific model)."},
+                    "target": {"type": "string", "description": "Model name to remove (only for action='remove')."}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "save_model",
             "description": "Saves the model to disk.",
             "parameters": {
@@ -897,6 +1020,14 @@ def process_user_message(mph_client, model, messages, user_content, system_promp
                         result = solve_study(model, args["study_name"])
                     elif name == "evaluate_expression":
                         result = evaluate_expression(model, args["expression"], args["unit"], args.get("dataset"), args.get("inner"), args.get("outer"))
+                    elif name == "get_solution_info":
+                        result = get_solution_info(model, args["dataset"])
+                    elif name == "export_data":
+                        result = export_data(model, args["dataset"], args["filename"])
+                    elif name == "manage_session":
+                        result = manage_session(mph_client, model, args["action"], args.get("target"))
+                        if args["action"] == "clear" or (model and args.get("target") == model.name()):
+                             model = None # Reset current model reference
                     elif name == "save_model":
                         result = save_model(model, args["filename"])
                     elif name == "refresh_context":
