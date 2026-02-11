@@ -5,6 +5,7 @@ import json
 from dotenv import load_dotenv
 from openai import OpenAI
 import physics # Custom mappings
+import traceback
 
 # Load environment variables
 load_dotenv('env.local')
@@ -35,6 +36,14 @@ def get_model_context(model):
     context.append(f"Modules: {model.modules()}")
     context.append(f"Geometries: {model.geometries()}")
     context.append(f"Studies: {model.studies()}")
+    context.append(f"Datasets: {model.datasets()}")
+    context.append(f"Selections: {model.selections()}")
+    context.append(f"Functions: {model.functions()}")
+
+    problems = model.problems()
+    if problems:
+         context.append("\n=== Problems/Warnings ===")
+         context.append(pprint.pformat(problems))
     
     context.append("\n=== Parameters (Global) ===")
     try:
@@ -82,7 +91,7 @@ def get_model_context(model):
     # --- Materials Inspection ---
     try:
         context.append("\n[Materials]")
-        # Mph doesn't have a direct 'materials()' list sometimes, distinct from access
+        # MPh doesn't have a direct 'materials()' list sometimes, distinct from access
         # Usually found under 'components' -> 'component 1' -> 'materials'
         # We'll try to scan the model tree briefly for materials
         for comp in model.components():
@@ -142,22 +151,35 @@ def solve_study(model, study_name):
     print(f"[Tool] Solving study '{study_name}' (this may take time)...")
     try:
         model.solve(study_name)
+        
+        # Check for problems after solving
+        problems = model.problems()
+        if problems:
+             return f"Study '{study_name}' completed but reported issues: {problems}"
+             
         return f"Study '{study_name}' execution completed."
     except Exception as e:
         return f"Error solving study: {e}"
 
-def evaluate_expression(model, expression, unit):
+def evaluate_expression(model, expression, unit, dataset=None, inner=None, outer=None):
     """Evaluates an expression and returns the result."""
-    print(f"[Tool] Evaluating '{expression}' in unit '{unit}'...")
+    print(f"[Tool] Evaluating '{expression}' in unit '{unit}' (Dataset: {dataset}, Inner: {inner}, Outer: {outer})...")
     try:
-        # We need a solution to evaluate. Usually uses the latest.
-        # Check if there are solutions
-        if not model.solutions():
-             return "Error: No solutions available to evaluate. Run a study first."
+        # Resolve 'inner' argument if it's an index
+        if isinstance(inner, str) and inner.isdigit():
+             inner = int(inner)
         
-        # Taking the last solution usually
-        result = model.evaluate(expression, unit)
-        return f"Result of '{expression}': {result} [{unit}]"
+        # MPh evaluate signature: evaluate(expression, unit=None, dataset=None, inner=None, outer=None)
+        # Note: MPh's evaluate can return numpy arrays. We should convert to string/list for text output.
+        result = model.evaluate(expression, unit, dataset=dataset, inner=inner, outer=outer)
+        
+        # Format result for chat output
+        if hasattr(result, "tolist"):
+             result_str = str(result.tolist())
+        else:
+             result_str = str(result)
+             
+        return f"Result of '{expression}': {result_str} [{unit}]"
     except Exception as e:
         return f"Error evaluating expression: {e}"
 
@@ -170,10 +192,6 @@ def save_model(model, filename):
     except Exception as e:
         return f"Error saving model: {e}"
 
-import traceback
-
-# ... imports ...
-
 def create_model(mph_client, name):
     """Creates a new blank model. Returns (message, model_object)."""
     print(f"[Tool] Creating new model '{name}'...")
@@ -185,20 +203,16 @@ def create_model(mph_client, name):
     except Exception as e:
         return (f"Error creating model: {e}", None)
 
-# ... (other tools remain returning strings) ...
-
-
-
 def add_component(model, name, dimension):
     """Adds a component to the model."""
     print(f"[Tool] Adding component '{name}' with dimension '{dimension}'...")
     try:
-        # Check if component already exists (using Java API to avoid caching issues)
-        if name in [str(t) for t in model.java.component().tags()]:
+        if name in model.components():
             return f"Error: Component '{name}' already exists."
 
-        # Create component using Java API
-        comp = model.java.component().create(name)
+        # Create component
+        # MPh's model/'components' returns the collection of components
+        model.create('components', True, name=name)
         
         # Map dimension string to integer
         dim_map = {"1D": 1, "2D": 2, "3D": 3, "0D": 0}
@@ -207,7 +221,12 @@ def add_component(model, name, dimension):
         if dim_val is not None:
              geom_name = "geom1"
              try:
-                 comp.geom().create(geom_name, dim_val)
+                 # Create geometry with specified dimension
+                 # Try to increment geom name if exists
+                 if geom_name in model.geometries():
+                     geom_name = f"geom{len(model.geometries()) + 1}"
+                 
+                 model.create('geometries', dim_val, name=geom_name)
                  return f"Created component '{name}' and geometry '{geom_name}' ({dimension})."
              except Exception as ge:
                  return f"Created component '{name}', but failed to create geometry: {ge}"
@@ -220,103 +239,83 @@ def add_physics(model, component, interface, tag=None):
     """Adds a physics interface to a component."""
     print(f"[Tool] Adding physics '{interface}' to component '{component}' with tag '{tag}'...")
     try:
-        # Using Java API for lookup
-        current_components = [str(t) for t in model.java.component().tags()]
-        if component not in current_components:
-            return f"Error: Component '{component}' not found. Available: {current_components}"
+        if component not in model.components():
+            return f"Error: Component '{component}' not found. Available: {model.components()}"
 
-        comp_java = model.java.component(component)
-        
-        # Physics interfaces are usually associated with a geometry.
-        # Try to find an existing geometry in the component.
-        geoms = comp_java.geom().tags()
-        if not geoms:
-             return f"Error: No geometry found in component '{component}'. Create geometry first."
-        geom_tag = geoms[0] # Use the first geometry found
+        # Try to find a geometry
+        # MPh doesn't explicitly link component->geometry in the python tree easily without inspection
+        # But we can check `model.geometries()`
+        geometries = model.geometries()
+        if not geometries:
+             return f"Error: No geometry found. Create geometry first."
+        geom_name = geometries[0] # Default to first geometry
 
         # Resolve physics interface and tag using physics module
         phys_id, default_tag = physics.get_physics_info(interface)
-        final_interface = phys_id if phys_id else interface # Fallback to input if not found
+        final_interface = phys_id if phys_id else interface
         
         if not tag:
              tag = default_tag if default_tag else final_interface.lower().replace(" ", "")
              
-        # Check if physics with this tag already exists in this component
-        # model.physics(component) might be stale too.
-        # Use Java: comp_java.physics().tags()
-        if tag in [str(t) for t in comp_java.physics().tags()]:
-             return f"Error: Physics '{tag}' already exists in component '{component}'."
+        if tag in model.physics():
+             return f"Error: Physics '{tag}' already exists."
              
-        comp_java.physics().create(tag, final_interface, geom_tag)
-        return f"Created physics '{final_interface}' (requested '{interface}') with tag '{tag}' assigned to geometry '{geom_tag}' in component '{component}'."
+        # MPh create: model/'physics'.create(type, geometry, name=tag)
+        # We need the geometry NODE, not just string
+        geom_node = model/'geometries'/geom_name
+        
+        model.create('physics', final_interface, geom_node, name=tag)
+        
+        return f"Created physics '{final_interface}' (requested '{interface}') with tag '{tag}' assigned to geometry '{geom_name}'."
     except Exception as e:
         return f"Error adding physics: {e}"
-
 
 def add_physics_feature(model, component, physics, name, type, dimension=None):
     """Adds a feature to a physics interface."""
     print(f"[Tool] Adding physics feature '{name}' ({type}) to '{physics}' in '{component}'...")
     try:
-        # Get component
-        if component not in model.java.component().tags():
-             return f"Error: Component '{component}' not found."
-        comp_java = model.java.component(component)
-
-        # Get physics
-        if physics not in comp_java.physics().tags():
-             return f"Error: Physics '{physics}' not found in component '{component}'."
-        phys_java = comp_java.physics(physics)
+        physics_node = model/'physics'/physics
+        if not physics_node.exists():
+             return f"Error: Physics '{physics}' not found."
         
-        # Check if feature exists
-        if name in [str(t) for t in phys_java.feature().tags()]:
+        feature_node = physics_node/name
+        if feature_node.exists():
              return f"Error: Feature '{name}' already exists in physics '{physics}'."
 
         # Create feature
-        # If dimension is provided, use it. Otherwise let COMSOL infer (usually 2nd arg is type, 3rd is dim?)
-        # User snippet: create("fp1", "FluidProperties", 2) -> name, type, dim
         if dimension is not None:
-             phys_java.feature().create(name, type, int(dimension))
+             physics_node.create(type, int(dimension), name=name)
         else:
-             # Try without dimension if allowed, or assume based on physics?
-             # COMSOL Java API usually requires dimension for some features.
-             # Let's try to infer or require it. For now, assume user/agent provides it if strictly needed.
-             # Actually, creating without dimension might fail for geometric features.
-             # Let's default to create(name, type) and see if it works for global features, 
-             # but strictly warn about geometric ones.
-             try:
-                phys_java.feature().create(name, type)
-             except Exception:
-                return f"Error: Dimension required for feature '{type}'. Please specify 'dimension'."
+             physics_node.create(type, name=name)
         
         return f"Created physics feature '{name}' ({type}) in '{physics}'."
     except Exception as e:
         return f"Error adding physics feature: {e}"
 
-
 def set_physics_selection(model, component, physics, feature, selection):
     """Sets the geometric selection for a physics feature."""
     print(f"[Tool] Setting selection for '{feature}' in '{physics}' to {selection}...")
     try:
-        # Resolve path
-        feat_java = model.java.component(component).physics(physics).feature(feature)
+        # Resolve node
+        node = model/'physics'/physics/feature
+        if not node.exists():
+            return f"Error: Feature '{feature}' not found in physics '{physics}'."
         
-        # Selection is passed as list of integers. Ensure correct type.
-        # COMSOL Java expects int[] array.
-        # Need to handle if selection is [1, 2, 3] or "1 2 3" or "all"
+        # Normalize selection
         if isinstance(selection, str):
             if selection.lower() == "all":
-                feat_java.selection().all()
+                node.select("all")
                 return f"Set selection for '{feature}' to ALL."
             else:
                  # Try splitting space separated
                  sel_list = [int(x) for x in selection.split() if x.strip().isdigit()]
+                 node.select(sel_list)
         elif isinstance(selection, list):
-             sel_list = [int(x) for x in selection]
+             node.select(selection)
         else:
              return f"Error: Invalid selection format '{selection}'."
              
-        feat_java.selection().set(sel_list)
-        return f"Set selection for '{feature}' to {sel_list}."
+        return f"Set selection for '{feature}' to {selection}."
     except Exception as e:
         return f"Error setting selection: {e}"
 
@@ -324,13 +323,12 @@ def set_physics_property(model, component, physics, feature, property, value):
     """Sets a property value for a physics feature."""
     print(f"[Tool] Setting property '{property}' of '{feature}' in '{physics}' to '{value}'...")
     try:
-         # Resolve path
-        feat_java = model.java.component(component).physics(physics).feature(feature)
+        # Resolve node
+        node = model/'physics'/physics/feature
+        if not node.exists():
+             return f"Error: Feature '{feature}' not found in physics '{physics}'."
         
-        # Set string/double/int. Python -> Java bridge handles some, but explicit typing helps.
-        # Usually setString or setDouble. 'set' is generic in MPH or JNI? 
-        # model.java objects usually support .set(name, value)
-        feat_java.set(property, value)
+        node.property(property, value)
         return f"Set property '{property}' of '{feature}' to '{value}'."
     except Exception as e:
         return f"Error setting physics property: {e}"
@@ -339,45 +337,30 @@ def add_geometry_feature(model, geometry, type, name=None, properties=None):
     """Adds a geometric feature (Block, Circle, etc.) to a geometry."""
     print(f"[Tool] Adding geometry feature '{type}' to geometry '{geometry}'...")
     try:
-        # Find the component that owns this geometry
-        found_comp_tag = None
-        found_geom_java = None
-        for c_tag in model.java.component().tags():
-             c_java = model.java.component(c_tag)
-             if geometry in c_java.geom().tags():
-                 found_comp_tag = c_tag
-                 found_geom_java = c_java.geom(geometry)
-                 break
+        # Check geometry existence via MPh
+        if geometry not in model.geometries():
+             return f"Error: Geometry '{geometry}' not found."
         
-        if not found_geom_java:
-            return f"Error: Geometry '{geometry}' not found in any component."
-
-        if not name:
-             name = f"{type.lower()}1" # simplistic auto-naming
-
-        # Check if feature with this name already exists (using Java API)
-        # found_geom_java is the geom object. .feature() gets the feature list container. .tags() gets names.
-        if name in [str(t) for t in found_geom_java.feature().tags()]:
-            return f"Error: Geometry feature '{name}' already exists in geometry '{geometry}'."
-             
-        feat = found_geom_java.create(name, type)
+        geom_node = model/'geometries'/geometry
         
+        # Create feature
+        if name:
+             if name in (child.name() for child in geom_node.children()):
+                  return f"Error: Geometry feature '{name}' already exists in geometry '{geometry}'."
+             feat = geom_node.create(type, name=name)
+        else:
+             feat = geom_node.create(type)
+        
+        name = feat.name() # Update name
+
         if properties:
              for key, val in properties.items():
                  try:
-                     # Attempt to set property, handling common types
-                     if isinstance(val, (int, float)):
-                         feat.set(key, val)
-                     elif isinstance(val, str):
-                         feat.set(key, val)
-                     elif isinstance(val, list): # For array properties
-                         feat.set(key, val)
-                     else:
-                         feat.set(key, str(val)) # Fallback to string
+                     feat.property(key, val)
                  except Exception as prop_e:
                      print(f"Warning: Could not set property '{key}' to '{val}' for feature '{name}': {prop_e}")
                          
-        found_geom_java.run(name) # Build this specific feature
+        feat.run() # Build this specific feature
         return f"Created geometry feature '{name}' of type '{type}' in geometry '{geometry}'."
         
     except Exception as e:
@@ -387,40 +370,32 @@ def create_geometry_boolean(model, geometry, type, name, input_objects):
     """Creates a boolean geometry operation (Union, Difference, Intersection)."""
     print(f"[Tool] Creating geometry boolean '{type}' ({name}) in '{geometry}' with inputs {input_objects}...")
     try:
-         # Find geometry
-        found_geom_java = None
-        for c_tag in model.java.component().tags():
-             c_java = model.java.component(c_tag)
-             if geometry in c_java.geom().tags():
-                 found_geom_java = c_java.geom(geometry)
-                 break
+        if geometry not in model.geometries():
+             return f"Error: Geometry '{geometry}' not found."
+            
+        geom_node = model/'geometries'/geometry
         
-        if not found_geom_java:
-            return f"Error: Geometry '{geometry}' not found."
+        if (geom_node/name).exists():
+             return f"Error: Feature '{name}' already exists."
 
-        if name in [str(t) for t in found_geom_java.feature().tags()]:
-            return f"Error: Feature '{name}' already exists."
-
-        # Create boolean feature
-        # type should be "Uni", "Dif", "Int" (COMSOL tags usually) or "Union", "Difference", "Intersection" -> Map them
+        # Map type
         type_map = {
             "Union": "Uni", "union": "Uni",
             "Difference": "Dif", "difference": "Dif",
             "Intersection": "Int", "intersection": "Int"
         }
-        comsol_type = type_map.get(type, type) # Fallback to passed type if not in map
+        comsol_type = type_map.get(type, type)
         
-        feat = found_geom_java.create(name, comsol_type)
+        feat = geom_node.create(comsol_type, name=name)
         
         # Set input objects
-        # input_objects should be a list of feature names
-        if isinstance(input_objects, list):
-             feat.selection("input").set(input_objects)
-        elif isinstance(input_objects, str):
-             # Try split
-             feat.selection("input").set(input_objects.split())
+        if isinstance(input_objects, str):
+             input_objects = input_objects.split()
              
-        found_geom_java.run(name)
+        # Fallback to Java for input selection
+        feat.java.selection("input").set(input_objects)
+             
+        feat.run()
         return f"Created boolean operation '{name}' ({comsol_type}) on inputs {input_objects}."
     except Exception as e:
         return f"Error creating geometry boolean: {e}"
@@ -429,29 +404,26 @@ def add_material(model, component, name, material_type="Common", library_path=No
     """Adds a material to the component."""
     print(f"[Tool] Adding material '{name}' to '{component}' (Source: {library_path})...")
     try:
-        comp_java = model.java.component(component)
-        if not comp_java:
-            return f"Error: Component '{component}' not found."
-            
-        # If library_path is provided, try to load. 
-        # Note: 'Common' is the standard type for blank materials.
-        # Loading from library usually involves 'Link' or mimicking the file structure.
-        # But 'create(name, "Common", filename)' is supported in some APIs.
-        # Let's try basic creation first.
-        
-        if name in [str(t) for t in comp_java.material().tags()]:
+        # Check component
+        if component not in model.components():
+             return f"Error: Component '{component}' not found."
+
+        if name in model.materials():
              return f"Error: Material '{name}' already exists."
 
+        materials = model/'materials'
+        
         if library_path:
              # Try to create from file
              try:
-                 mat = comp_java.material().create(name, material_type, library_path)
+                 # MPh create passes args to Java create.
+                 materials.create(material_type, library_path, name=name)
                  return f"Created material '{name}' from '{library_path}'."
              except Exception as lib_e:
                  return f"Error loading material from library: {lib_e}. Suggestion: Create empty material and set properties."
         
         # Create empty/common material
-        comp_java.material().create(name, material_type)
+        materials.create(material_type, name=name)
         return f"Created empty material '{name}'. Please set properties."
     except Exception as e:
         return f"Error adding material: {e}"
@@ -460,14 +432,16 @@ def add_multiphysics(model, component, type, tag=None):
     """Adds a multiphysics coupling."""
     print(f"[Tool] Adding multiphysics '{type}' to '{component}'...")
     try:
-        comp_java = model.java.component(component)
-        if not comp_java:
-            return f"Error: Component '{component}' not found."
-            
+        if component not in model.components():
+             return f"Error: Component '{component}' not found."
+        
+        multiphysics = model/'multiphysics'
+        
         if not tag:
-             tag = f"mp{len(comp_java.multiphysics().tags()) + 1}"
-             
-        comp_java.multiphysics().create(tag, type)
+             tag = f"mp{len(multiphysics.children()) + 1}"
+        
+        # MPh create
+        multiphysics.create(type, name=tag)
         return f"Created multiphysics coupling '{tag}' of type '{type}'."
     except Exception as e:
         return f"Error adding multiphysics: {e}"
@@ -477,54 +451,40 @@ def export_plot(model, plot_group, filename):
     print(f"[Tool] Exporting plot group '{plot_group}' to '{filename}'...")
     try:
         # Check if plot group exists
-        pg_tags = [str(t) for t in model.java.result().tags()]
-        if plot_group not in pg_tags:
-             return f"Error: Plot group '{plot_group}' not found. Available: {pg_tags}"
+        if plot_group not in model.plots():
+             return f"Error: Plot group '{plot_group}' not found. Available: {model.plots()}"
         
         # Ensure directory exists
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         
-        # Check if an export feature for this file exists, or create a temporary one
-        # To avoid clutter, we can create a temporary export tag
-        export_tag = "img_export_temp"
-        
-        # Remove if exists (to reset settings)
-        if export_tag in [str(t) for t in model.java.export().tags()]:
-             model.java.export().remove(export_tag)
-             
-        # Create Image export
-        exp = model.java.export().create(export_tag, "Image")
-        exp.set("sourceobject", plot_group)
-        exp.set("filename", os.path.abspath(filename))
-        
-        # Adjust settings for web view (optional)
-        # exp.set("size", "manual")
-        # exp.set("unit", "px")
-        # exp.set("width", "800")
+        # Create temporary export
+        name = "img_export_temp"
+        exports = model/'exports'
+        if (exports/name).exists():
+            (exports/name).remove()
+            
+        exp = exports.create("Image", name=name)
+        exp.property("sourceobject", model/'plots'/plot_group)
+        exp.property("filename", os.path.abspath(filename))
         
         # Run export
-        model.java.export(export_tag).run()
+        exp.run()
         
         # Cleanup
-        model.java.export().remove(export_tag)
+        exp.remove()
         
         return f"Successfully exported '{plot_group}' to '{filename}'. URL: /static/plots/{os.path.basename(filename)}"
     except Exception as e:
         return f"Error exporting plot: {e}"
 
-# ------------------------------------------------------------------------------
-# Tool Schema for OpenAI
-# ------------------------------------------------------------------------------
-
 def create_mesh(model, geometry, name="mesh1"):
     """Creates a new mesh sequence."""
     print(f"[Tool] Creating mesh '{name}' for geometry '{geometry}'...")
     try:
-        # Check if mesh already exists
-        if name in [str(t) for t in model.java.mesh().tags()]:
+        if name in model.meshes():
              return f"Error: Mesh '{name}' already exists."
 
-        model.java.mesh().create(name, geometry)
+        model.create('meshes', geometry, name=name)
         return f"Created mesh '{name}' for geometry '{geometry}'."
     except Exception as e:
         return f"Error creating mesh: {e}"
@@ -533,15 +493,18 @@ def create_study(model, name="std1"):
     """Creates a new study."""
     print(f"[Tool] Creating study '{name}'...")
     try:
-        # Check if study already exists (Java)
-        if name in [str(t) for t in model.java.study().tags()]:
+        if name in model.studies():
              return f"Error: Study '{name}' already exists."
 
-        model.java.study().create(name)
-        model.java.study(name).create("stat", "Stationary") # Default to stationary
+        study = model.create('studies', name=name)
+        study.create("Stationary", name="stat") # Default to stationary
         return f"Created study '{name}' (Stationary)."
     except Exception as e:
         return f"Error creating study: {e}"
+
+# ------------------------------------------------------------------------------
+# Tool Schema for OpenAI
+# ------------------------------------------------------------------------------
 
 tools = [
     {
@@ -640,12 +603,15 @@ tools = [
         "type": "function",
         "function": {
             "name": "evaluate_expression",
-            "description": "Evaluates a numerical expression from the results.",
+            "description": "Evaluates a numerical expression from the results. Supports advanced selection of datasets and time/parameter steps.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "expression": {"type": "string", "description": "The expression to evaluate (e.g., 'spf.U', 'T')."},
-                    "unit": {"type": "string", "description": "The unit to evaluate in (e.g., 'm/s', 'degC')."}
+                    "unit": {"type": "string", "description": "The unit to evaluate in (e.g., 'm/s', 'degC')."},
+                    "dataset": {"type": "string", "description": "Optional: Specific dataset to evaluate (e.g., 'dset1'). Defaults to solution dataset."},
+                    "inner": {"type": "string", "description": "Optional: Time step or inner solution index. Use 'first', 'last', or a number (1-based)."},
+                    "outer": {"type": "integer", "description": "Optional: Parameter sweep step (outer solution) index."}
                 },
                 "required": ["expression", "unit"]
             }
@@ -930,7 +896,7 @@ def process_user_message(mph_client, model, messages, user_content, system_promp
                     elif name == "solve_study":
                         result = solve_study(model, args["study_name"])
                     elif name == "evaluate_expression":
-                        result = evaluate_expression(model, args["expression"], args["unit"])
+                        result = evaluate_expression(model, args["expression"], args["unit"], args.get("dataset"), args.get("inner"), args.get("outer"))
                     elif name == "save_model":
                         result = save_model(model, args["filename"])
                     elif name == "refresh_context":
